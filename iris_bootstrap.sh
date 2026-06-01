@@ -9,7 +9,7 @@
 #
 # Stack-Disziplin: nur Ada / Ampere / Hopper — niemals Blackwell (sm_120).
 # Sicherheit: ComfyUI bindet nur auf 127.0.0.1, Zugriff ausschliesslich per
-#             SSH-Tunnel. Kein oeffentlicher HTTP-Proxy-Port.
+#             SSH-Tunnel oder Tailscale-Mesh. Kein oeffentlicher HTTP-Proxy-Port.
 
 set -euo pipefail
 
@@ -56,7 +56,7 @@ ULTRASHARP_BYTES="67000000"     # ~67 MB
 # fp16 bewusst (nicht fp8): Iris hat VRAM-Headroom — Qualitaet vor Sparsamkeit.
 # Soll-Groessen sind Schaetzwerte aus der Recherche; nach 1. realem Lauf per
 # stat nachtragen (wie bei Juggernaut geschehen).
-INSTALL_FLUX="${INSTALL_FLUX:-true}"   # nur exakt "true" zieht den Flux-Block
+INSTALL_FLUX="${INSTALL_FLUX:-false}"  # nur exakt "true" zieht den Flux-Block; Default schlank
 
 # 1) Hauptmodell (gated) -> models/diffusion_models/
 FLUX_MAIN_URL="https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors"
@@ -77,6 +77,19 @@ FLUX_CLIPL_BYTES="246000000"    # ~246 MB
 FLUX_T5_URL="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
 FLUX_T5_DST="$COMFY_ROOT/models/text_encoders/t5xxl_fp16.safetensors"
 FLUX_T5_BYTES="9790000000"      # ~9,79 GB
+
+# ─── Tailscale (optionales Profil, via USE_TAILSCALE=true aktiviert) ─────────
+# Loest den UI-Zugriff hinter dem ISP-Portfilter (Binz): bei restriktiver
+# Firewall faellt Tailscale auf DERP ueber 443 zurueck — und 443 lebt.
+# Userspace-Modus ist Pflicht, der Pod-Container hat kein /dev/net/tun.
+# Eingehende Tailnet-Verbindungen reicht der netstack automatisch an
+# localhost:gleicher-Port weiter -> ComfyUI bleibt auf 127.0.0.1, der Mac
+# oeffnet http://iris:8188. Auth-Key ist ephemeral+reusable, kommt als
+# RunPod-Secret — NIE hardcoden.
+USE_TAILSCALE="${USE_TAILSCALE:-false}"   # nur exakt "true" zieht den Block
+TS_HOSTNAME="iris"                        # MagicDNS-Name -> http://iris:8188
+# TS_AUTHKEY wird inline via ${TS_AUTHKEY:-} gelesen (wie HF_TOKEN) — Secret,
+# bewusst NICHT hier deklariert.
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Farben: nur, wenn stdout wirklich ein Terminal ist
@@ -107,6 +120,66 @@ file_ok() {
     [ -f "$datei" ] || return 1
     ist=$(stat -c %s "$datei")
     [ "$ist" -ge $(( soll * 95 / 100 )) ]
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage: Tailscale (Userspace-Mesh — loest UI-Zugriff hinter ISP-Portfilter)
+# ═══════════════════════════════════════════════════════════════════════════
+setup_tailscale() {
+    # Gate: nur bei ausdruecklicher Aktivierung (analog INSTALL_FLUX)
+    if [ "$USE_TAILSCALE" != "true" ]; then
+        skip_msg "USE_TAILSCALE nicht gesetzt — Tailscale-Block uebersprungen"
+        return
+    fi
+
+    # Fail-Fast: Schalter an, aber kein Schluessel -> sauber abbrechen
+    if [ -z "${TS_AUTHKEY:-}" ]; then
+        die "USE_TAILSCALE=true, aber TS_AUTHKEY fehlt — Key als RunPod-Secret setzen"
+    fi
+
+    # Install (idempotent): vorhandenes Binary nicht neu ziehen. curl|sh ist
+    # Tailscales offizielle Routine ueber HTTPS — auf einem fluechtigen Fremd-
+    # Pod vertretbar (auf Apollon waere der Repo-Weg richtig).
+    if command -v tailscale >/dev/null 2>&1; then
+        skip_msg "tailscale bereits installiert — ueberspringe Install"
+    else
+        log "Installiere Tailscale (offizielles Install-Skript ueber 443)"
+        curl -fsSL https://tailscale.com/install.sh | sh \
+            || die "Tailscale-Installation fehlgeschlagen"
+    fi
+
+    # Daemon im Userspace starten (kein /dev/net/tun im Container).
+    # Laeuft schon? Nicht doppelt starten (idempotent bei Re-Run im selben Pod).
+    if pgrep -x tailscaled >/dev/null 2>&1; then
+        skip_msg "tailscaled laeuft bereits — ueberspringe Daemon-Start"
+    else
+        log "Starte tailscaled (userspace-networking, Hintergrund)"
+        tailscaled --tun=userspace-networking \
+            >/var/log/tailscaled.log 2>&1 &
+    fi
+
+    # Poll-Loop gegen die Race Condition: der Daemon-Socket erscheint, sobald
+    # tailscaled lauscht — login-unabhaengig, daher robuster als 'tailscale
+    # status' (dessen Exit-Code vor dem Login zwischen Versionen schwankt).
+    log "Warte auf tailscaled-Bereitschaft (max 15 s)"
+    local sock="/var/run/tailscale/tailscaled.sock" ready=0 i
+    for i in $(seq 1 30); do
+        if [ -S "$sock" ]; then ready=1; break; fi
+        sleep 0.5
+    done
+    [ "$ready" -eq 1 ] || die "tailscaled nicht bereit nach 15 s — /var/log/tailscaled.log pruefen"
+
+    # Ans Tailnet anmelden. 'ephemeral' steckt im Key selbst, nicht hier.
+    log "Melde Pod ans Tailnet an (Hostname: $TS_HOSTNAME)"
+    tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" \
+        || die "tailscale up fehlgeschlagen — Key gueltig / nicht abgelaufen?"
+
+    # Verify: Tailnet-IP beweist, dass der Knoten steht
+    local ts_ip
+    ts_ip=$(tailscale ip -4 2>/dev/null | head -n1) \
+        || die "konnte Tailscale-IP nicht lesen"
+    log "Tailscale aktiv — $TS_HOSTNAME @ $ts_ip"
+    log "  UI nach ComfyUI-Start im Browser: http://$TS_HOSTNAME:$COMFY_PORT"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -324,6 +397,7 @@ verify() {
 main() {
     log "iris_bootstrap startet — Ziel: $COMFY_ROOT"
 
+    setup_tailscale       # zuerst: Netzpfad steht, bevor der ~8-min-Bau laeuft
     setup_venv
     install_pytorch
     clone_comfyui
@@ -335,6 +409,7 @@ main() {
     log "  cd \"$COMFY_ROOT\" && \"$VENV_PY\" main.py --port $COMFY_PORT --listen $COMFY_LISTEN"
     log "  Danach von aussen per SSH-Tunnel:"
     log "  ssh -L ${COMFY_PORT}:127.0.0.1:${COMFY_PORT} <pod-ssh-zugang>"
+    log "  ODER per Tailscale (USE_TAILSCALE=true): http://${TS_HOSTNAME}:${COMFY_PORT}"
 }
 
 main "$@"
