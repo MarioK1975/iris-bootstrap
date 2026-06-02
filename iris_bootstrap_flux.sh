@@ -38,7 +38,7 @@ NODES_DIR="$COMFY_ROOT/custom_nodes"
 MANAGER_URL="https://github.com/ltdrdata/ComfyUI-Manager.git"
 IMAGE_SAVER_URL="https://github.com/alexopus/ComfyUI-Image-Saver.git"
 IMAGE_SAVER_REF="2ba0f2bc4ee5235a0f9299f415fb2fb6be78f9e9"   # gepinnt 2026-05-31, war 'master'
-VHS_URL="https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git"
+
 # Modell-URLs (immer /resolve/main/ — echte Binaerdatei, nicht der Blob-Viewer)
 JUGGERNAUT_URL="https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
 ULTRASHARP_URL="https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"
@@ -77,41 +77,7 @@ FLUX_CLIPL_BYTES="246000000"    # ~246 MB
 FLUX_T5_URL="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
 FLUX_T5_DST="$COMFY_ROOT/models/text_encoders/t5xxl_fp16.safetensors"
 FLUX_T5_BYTES="9790000000"      # ~9,79 GB
-# ─── WAN 2.2 I2V (optionales Profil, via INSTALL_WAN=true aktiviert) ─────────
-# Fuenf Dateien, vier Zielverzeichnisse, KEIN Gate -> kein HF_TOKEN noetig.
-# MoE-Design: das 14B-Modell ist physisch ZWEI Dateien (High-/Low-Noise-Experte);
-# beide liegen auf der Platte, zur Laufzeit sitzt immer nur einer im VRAM.
-# Falle 1: Hauptmodelle + VAE aus dem 2.2-Repo, Encoder + CLIP-Vision aus 2.1.
-# Falle 2: Repo-Kapitalisierung! 2.2 = ...Repackaged (grosses R),
-#          2.1 = ...repackaged (kleines r) — exakt so, sonst 404.
-# Soll-Groessen sind Schaetzwerte aus der Recherche; nach 1. realem Lauf per
-# stat nachtragen (wie bei Juggernaut geschehen).
-INSTALL_WAN="${INSTALL_WAN:-false}"  # nur exakt "true" zieht den WAN-Block
 
-# 1) High-Noise-Experte (Diffusion) -> models/diffusion_models/
-WAN_HIGH_URL="https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
-WAN_HIGH_DST="$COMFY_ROOT/models/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
-WAN_HIGH_BYTES="14300000000"        # ~14,3 GB
-
-# 2) Low-Noise-Experte (Diffusion) -> models/diffusion_models/
-WAN_LOW_URL="https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
-WAN_LOW_DST="$COMFY_ROOT/models/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
-WAN_LOW_BYTES="14300000000"         # ~14,3 GB
-
-# 3) UMT5-XXL Text-Encoder (fp8) -> models/text_encoders/   [aus dem 2.1-Repo!]
-WAN_T5_URL="https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
-WAN_T5_DST="$COMFY_ROOT/models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
-WAN_T5_BYTES="6740000000"           # ~6,74 GB
-
-# 4) WAN VAE -> models/vae/   [Datei heisst 2.1, liegt aber im 2.2-Repo]
-WAN_VAE_URL="https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors"
-WAN_VAE_DST="$COMFY_ROOT/models/vae/wan_2.1_vae.safetensors"
-WAN_VAE_BYTES="300000000"           # ~0,3 GB
-
-# 5) CLIP-Vision H -> models/clip_vision/   [aus dem 2.1-Repo; URL beim 1. Lauf gegenpruefen]
-WAN_CLIPVISION_URL="https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors"
-WAN_CLIPVISION_DST="$COMFY_ROOT/models/clip_vision/clip_vision_h.safetensors"
-WAN_CLIPVISION_BYTES="1300000000"   # ~1,3 GB
 # ─── Tailscale (optionales Profil, via USE_TAILSCALE=true aktiviert) ─────────
 # Loest den UI-Zugriff hinter dem ISP-Portfilter (Binz): bei restriktiver
 # Firewall faellt Tailscale auf DERP ueber 443 zurueck — und 443 lebt.
@@ -321,24 +287,7 @@ install_nodes() {
             || die "Image-Saver-Checkout fehlgeschlagen (Ref $IMAGE_SAVER_REF vorhanden?)"
     fi
     _install_node_deps "$saver_dir"
-# 3) VideoHelperSuite — nur fuers WAN/Video-Profil (Node VHS_VideoCombine:
-    #    Frames -> mp4). Hinter INSTALL_WAN-Gate, damit der schlanke Bild-Stack
-    #    (Juggernaut/Flux) keinen Video-Ballast traegt — analog zur Gate-Logik
-    #    in download_models. Braucht ffmpeg auf dem PATH (Deploy-Schritt, NICHT
-    #    hier). Vorerst master wie der Manager; pin-faehig nach erstem Lauf.
-    if [ "$INSTALL_WAN" = "true" ]; then
-        local vhs_dir="$NODES_DIR/ComfyUI-VideoHelperSuite"
-        if dir_exists "$vhs_dir"; then
-            skip_msg "VideoHelperSuite bereits vorhanden — ueberspringe Klon"
-        else
-            log "Klone VideoHelperSuite (master, aktuell)"
-            git clone --depth 1 "$VHS_URL" "$vhs_dir" \
-                || die "VideoHelperSuite-Klon fehlgeschlagen"
-        fi
-        _install_node_deps "$vhs_dir"
-    else
-        skip_msg "INSTALL_WAN nicht gesetzt — VideoHelperSuite uebersprungen"
-    fi
+
     log "Custom Nodes bereit"
 }
 
@@ -397,17 +346,7 @@ download_models() {
     else
         skip_msg "INSTALL_FLUX nicht gesetzt — Flux-Block uebersprungen"
     fi
-# WAN 2.2 nur, wenn ausdruecklich aktiviert (~37 GB zusaetzlich, ungated)
-    if [ "$INSTALL_WAN" = "true" ]; then
-        log "WAN-Profil aktiv — lade zusaetzlich ~37 GB (5 Dateien, kein Token noetig)"
-        fetch_model "$WAN_HIGH_DST"       "$WAN_HIGH_BYTES"       "$WAN_HIGH_URL"
-        fetch_model "$WAN_LOW_DST"        "$WAN_LOW_BYTES"        "$WAN_LOW_URL"
-        fetch_model "$WAN_T5_DST"         "$WAN_T5_BYTES"         "$WAN_T5_URL"
-        fetch_model "$WAN_VAE_DST"        "$WAN_VAE_BYTES"        "$WAN_VAE_URL"
-        fetch_model "$WAN_CLIPVISION_DST" "$WAN_CLIPVISION_BYTES" "$WAN_CLIPVISION_URL"
-    else
-        skip_msg "INSTALL_WAN nicht gesetzt — WAN-Block uebersprungen"
-    fi
+
     log "Modelle bereit"
 }
 
@@ -436,24 +375,7 @@ verify() {
         fi
         log "  Flux-Dateibestand vollstaendig (4/4)"
     fi
-# ─── WAN-Dateibestand — nur wenn das Profil aktiv war ────────────────────
-    # Gleiche Quittungs-Logik wie bei Flux: file_ok schweigt, der Aufrufer
-    # sammelt die Luecken, am Ende EIN die mit vollstaendiger Liste. Fuenf
-    # Dateien statt vier (MoE = zwei Diffusionsmodelle).
-    if [ "$INSTALL_WAN" = "true" ]; then
-        log "Pruefe WAN-Dateibestand (fuenf Dateien, Soll-Groesse)"
-        local missing=()
-        file_ok "$WAN_HIGH_DST"       "$WAN_HIGH_BYTES"       || missing+=("$(basename "$WAN_HIGH_DST")")
-        file_ok "$WAN_LOW_DST"        "$WAN_LOW_BYTES"        || missing+=("$(basename "$WAN_LOW_DST")")
-        file_ok "$WAN_T5_DST"         "$WAN_T5_BYTES"         || missing+=("$(basename "$WAN_T5_DST")")
-        file_ok "$WAN_VAE_DST"        "$WAN_VAE_BYTES"        || missing+=("$(basename "$WAN_VAE_DST")")
-        file_ok "$WAN_CLIPVISION_DST" "$WAN_CLIPVISION_BYTES" || missing+=("$(basename "$WAN_CLIPVISION_DST")")
 
-        if [ "${#missing[@]}" -gt 0 ]; then
-            die "WAN-Dateien fehlen oder zu klein: ${missing[*]}"
-        fi
-        log "  WAN-Dateibestand vollstaendig (5/5)"
-    fi
     log "Smoke-Test: ComfyUI startet (--quick-test-for-ci, ohne --cpu, laedt Nodes + GPU)"
     ( cd "$COMFY_ROOT" && "$VENV_PY" main.py --quick-test-for-ci ) \
         || die "ComfyUI-Smoke-Test fehlgeschlagen — Node- oder Importfehler"
