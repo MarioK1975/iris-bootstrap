@@ -106,7 +106,7 @@ WAN_T5_BYTES="6740000000"           # ~6,74 GB
 # 4) WAN VAE -> models/vae/   [Datei heisst 2.1, liegt aber im 2.2-Repo]
 WAN_VAE_URL="https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors"
 WAN_VAE_DST="$COMFY_ROOT/models/vae/wan_2.1_vae.safetensors"
-WAN_VAE_BYTES="300000000"           # ~0,3 GB
+WAN_VAE_BYTES="253000000"      # ~254 MB, real per stat 253815318 (war 300000000, Fehlalarm)
 
 # 5) CLIP-Vision H -> models/clip_vision/   [aus dem 2.1-Repo; URL beim 1. Lauf gegenpruefen]
 WAN_CLIPVISION_URL="https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors"
